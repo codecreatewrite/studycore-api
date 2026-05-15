@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, String, DateTime, ForeignKey,
-    Integer, Float, Text, Enum
+    Integer, Float, Text
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy import func
@@ -29,17 +29,15 @@ class Concept(Base):
     title = Column(String(300), nullable=False)
     description = Column(Text, nullable=True)
 
-    lifecycle = Column(
-        Enum(ConceptLifecycle, name="concept_lifecycle"),
-        nullable=False,
-        default=ConceptLifecycle.DRAFT,
-        server_default=ConceptLifecycle.DRAFT.value,
-    )
+    # Plain String in DB — ConceptLifecycle enum used in Python only
+    # This avoids Postgres ENUM type which is painful to alter later
+    lifecycle = Column(String, nullable=False, default=ConceptLifecycle.DRAFT.value, server_default="draft")
 
+    # FSRS scheduling fields
     fsrs_stability = Column(Float, nullable=True)
     fsrs_difficulty = Column(Float, nullable=True)
     due_date = Column(DateTime(timezone=True), nullable=True)
-    recall_count = Column(Integer, default=0, nullable=False)
+    recall_count = Column(Integer, default=0, nullable=False, server_default="0")
     last_ai_score = Column(Float, nullable=True)
     avg_ai_score = Column(Float, nullable=True)
 
@@ -47,6 +45,7 @@ class Concept(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_recalled_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Relationships
     course = relationship("Course", back_populates="concepts")
     key_points = relationship(
         "KeyPoint",
