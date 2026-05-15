@@ -26,9 +26,6 @@ class Settings(BaseSettings):
     # Timezone
     TIMEZONE: str = "Africa/Lagos"
 
-    # AI
-    GROQ_API_KEY: str = ""
-
     class Config:
         env_file = ".env"
         case_sensitive = False

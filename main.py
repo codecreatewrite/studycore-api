@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.domains.auth.router import router as auth_router
 from app.domains.courses.router import router as courses_router
 from app.domains.concepts.router import router as concepts_router
+from app.domains.recall.router import router as recall_router
 
 
 @asynccontextmanager
@@ -16,7 +17,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="StudyCore API",
-    description="Cognitive fitness engine for university students",
     version="2.0.0",
     lifespan=lifespan,
     docs_url="/docs" if settings.APP_ENV == "development" else None,
@@ -34,6 +34,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(courses_router)
 app.include_router(concepts_router)
+app.include_router(recall_router)
 
 
 @app.get("/health")
