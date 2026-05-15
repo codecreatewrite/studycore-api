@@ -2,22 +2,36 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 
-# Neon requires SSL — the URL from Neon already includes ?sslmode=require
+
+def _build_engine_url(url: str) -> str:
+    """
+    Neon gives a pooler URL for the app (high concurrency, efficient).
+    psycopg2 needs the URL cleaned of unsupported params.
+    Remove channel_binding if present — psycopg2 doesn't support it.
+    """
+    # Strip unsupported params
+    if "channel_binding" in url:
+        import re
+        url = re.sub(r"[&?]channel_binding=[^&]*", "", url)
+        # Clean up trailing ? or & if it was the only param
+        url = url.rstrip("?&")
+    return url
+
+
 engine = create_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=True,      # Detect stale connections before use
-    pool_recycle=300,        # Recycle connections every 5 min (Neon idle timeout)
+    _build_engine_url(settings.DATABASE_URL),
+    pool_pre_ping=True,
+    pool_recycle=300,
     pool_size=5,
     max_overflow=10,
     pool_timeout=30,
-    echo=settings.APP_ENV == "development",  # Log SQL in dev only
+    echo=settings.APP_ENV == "development",
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def get_db():
-    """FastAPI dependency: yields a DB session, always closes it."""
     db = SessionLocal()
     try:
         yield db

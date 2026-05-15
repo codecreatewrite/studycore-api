@@ -1,19 +1,33 @@
 import os
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool
 from alembic import context
 
-# Load all models so Alembic can detect them
+# ── Load .env BEFORE anything else ──────────────────────────────
+# Alembic runs as a standalone process — it doesn't go through
+# FastAPI's startup, so pydantic-settings never loads the .env.
+# We do it manually here, once, at the top.
+from dotenv import load_dotenv
+load_dotenv()
+
+# ── Load all models so Alembic can detect schema changes ────────
 from app.db.base import Base
 from app.models import *  # noqa: F401, F403
 
 config = context.config
 
-# Override sqlalchemy.url from environment variable
-# This means alembic.ini never has a hardcoded URL
+# ── Pull DATABASE_URL from environment ──────────────────────────
 database_url = os.environ.get("DATABASE_URL", "")
+if not database_url:
+    raise ValueError(
+        "DATABASE_URL is not set. "
+        "Make sure your .env file exists and contains DATABASE_URL."
+    )
+
+# Render/Neon sometimes gives postgres:// — SQLAlchemy needs postgresql://
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
+
 config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
@@ -35,11 +49,8 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    url = config.get_main_option("sqlalchemy.url")
+    connectable = create_engine(url, poolclass=pool.NullPool)
     with connectable.connect() as connection:
         context.configure(
             connection=connection,
