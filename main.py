@@ -7,6 +7,7 @@ from app.domains.courses.router import router as courses_router
 from app.domains.concepts.router import router as concepts_router
 from app.domains.recall.router import router as recall_router
 from app.domains.push.router import router as push_router
+from app.domains.analytics.router import router as analytics_router
 
 
 @asynccontextmanager
@@ -38,6 +39,7 @@ app.include_router(courses_router)
 app.include_router(concepts_router)
 app.include_router(recall_router)
 app.include_router(push_router)
+app.include_router(analytics_router)
 
 
 @app.get("/health")
