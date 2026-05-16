@@ -233,3 +233,61 @@ Maximum 25 words. Return ONLY the sentence. No JSON. No explanation."""
         return None
     # Strip any quotes the model may have added
     return raw.strip().strip('"').strip("'")[:300]
+
+def extract_concepts_from_text(
+    text: str,
+    course_title: str,
+) -> Optional[list[str]]:
+    """
+    Extract candidate concept titles from raw lecture text.
+    Returns a list of concept title strings, or None if AI fails.
+
+    Deliberately extracts TITLES ONLY — not key points.
+    The student writes key points themselves.
+    Max 15 concepts per extraction to prevent overwhelm.
+    """
+    # Truncate to ~3000 words to stay within token limits
+    words = text.split()
+    if len(words) > 3000:
+        text = " ".join(words[:3000]) + "..."
+
+    prompt = f"""You are helping a university student identify what to study from their lecture notes.
+
+COURSE: {course_title}
+
+LECTURE TEXT:
+{text}
+
+Extract the key concepts a student would need to understand and be able to explain for an exam.
+
+Rules:
+- Extract CONCEPT TITLES ONLY — not definitions, not explanations
+- Each title must be specific and testable (a student could be asked about it in an exam)
+- Maximum 12 concepts — quality over quantity
+- Prefer mechanistic concepts over pure vocabulary
+- Skip vague headings like "Introduction" or "Overview"
+
+Good examples:
+- "Mechanism of action of beta-blockers"
+- "Frank-Starling law of the heart"
+- "Renin-angiotensin-aldosterone system"
+
+Bad examples:
+- "The heart" (too broad)
+- "Important concepts" (not specific)
+- "Summary" (not a concept)
+
+Respond ONLY with valid JSON, no markdown:
+{{"concepts": ["Concept title 1", "Concept title 2", "Concept title 3"]}}"""
+
+    raw = _call(prompt, max_tokens=400, temperature=0.3)
+    data = _parse_json(raw)
+    if not data:
+        return None
+
+    concepts = data.get("concepts", [])
+    if not isinstance(concepts, list):
+        return None
+
+    # Validate and clean
+    return [str(c).strip() for c in concepts if isinstance(c, str) and c.strip()][:12]
