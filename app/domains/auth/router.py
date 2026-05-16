@@ -6,6 +6,7 @@ from app.core.security import create_access_token, COOKIE_CONFIG
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.domains.auth.service import AuthService
 from app.domains.auth.schemas import AuthStatusResponse, UserResponse
+from app.models.user import User
 from app.core.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
