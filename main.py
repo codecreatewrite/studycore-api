@@ -23,12 +23,20 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# CORS — must be explicit origins (no wildcard) when allow_credentials=True
+# Add every frontend URL you use here
+allowed_origins = [
+    settings.FRONTEND_URL,          # Production Vercel URL
+    "http://localhost:3000",        # Local dev
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL, "http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_origins=allowed_origins,
+    allow_credentials=True,          # Required for cookies
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Content-Type", "Authorization", "Accept"],
+    expose_headers=["Set-Cookie"],   # Allow frontend to see Set-Cookie header
 )
 
 app.include_router(auth_router)
@@ -45,7 +53,13 @@ def health_check():
         db = SessionLocal()
         count = db.query(User).count()
         db.close()
-        return {"status": "healthy", "env": settings.APP_ENV, "db": "connected", "users": count}
+        return {
+            "status": "healthy",
+            "env": settings.APP_ENV,
+            "db": "connected",
+            "users": count,
+            "frontend_url": settings.FRONTEND_URL,
+        }
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
 

@@ -3,29 +3,24 @@ from typing import Optional
 from jose import JWTError, jwt
 from app.core.config import settings
 
+ALGORITHM = "HS256"
 
 def create_access_token(user_id: str) -> str:
-    """Create a 30-day JWT for the given user ID."""
     expire = datetime.now(timezone.utc) + timedelta(
         days=settings.ACCESS_TOKEN_EXPIRE_DAYS
     )
     payload = {"sub": user_id, "exp": expire}
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
 def decode_access_token(token: str) -> Optional[dict]:
-    """Decode and validate JWT. Returns payload or None."""
     try:
-        return jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        return jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         return None
 
 
 def should_refresh_token(payload: dict) -> bool:
-    """
-    Returns True if the token expires in less than REFRESH_THRESHOLD_DAYS.
-    Used to silently renew the cookie so active users never get logged out.
-    """
     exp = payload.get("exp")
     if not exp:
         return False
@@ -35,11 +30,13 @@ def should_refresh_token(payload: dict) -> bool:
     )
 
 
-# Cookie configuration — single source of truth
+# Cross-domain cookie config
+# SameSite=none + Secure=True required for cookie to work
+# across different domains (Vercel frontend → Render backend)
 COOKIE_CONFIG = {
     "key": "sc_token",
     "httponly": True,
-    "secure": True,       # HTTPS only
-    "samesite": "lax",    # CSRF protection
-    "max_age": 30 * 24 * 3600,  # 30 days in seconds
+    "secure": True,
+    "samesite": "none",   # CHANGED from "lax" to "none" for cross-domain
+    "max_age": 30 * 24 * 3600,
 }
