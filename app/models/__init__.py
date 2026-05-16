@@ -3,6 +3,7 @@ from app.models.course import Course
 from app.models.concept import Concept, ConceptLifecycle
 from app.models.key_point import KeyPoint
 from app.models.recall_attempt import RecallAttempt
+from app.models.push_subscription import PushSubscription
 
 __all__ = [
     "User", "OAuthState",
@@ -10,4 +11,5 @@ __all__ = [
     "Concept", "ConceptLifecycle",
     "KeyPoint",
     "RecallAttempt",
+    "PushSubscription",
 ]

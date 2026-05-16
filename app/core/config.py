@@ -3,31 +3,25 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # App
     APP_ENV: str = "development"
     APP_NAME: str = "StudyCore"
     SECRET_KEY: str
-
-    # Database
     DATABASE_URL: str
-
-    # Google OAuth
     GOOGLE_CLIENT_ID: str
     GOOGLE_CLIENT_SECRET: str
     GOOGLE_REDIRECT_URI: str
-
-    # CORS
     FRONTEND_URL: str = "http://localhost:3000"
-
-    # JWT
     ACCESS_TOKEN_EXPIRE_DAYS: int = 30
     REFRESH_THRESHOLD_DAYS: int = 7
-
-    # Timezone
     TIMEZONE: str = "Africa/Lagos"
 
     # AI
     GROQ_API_KEY: str = ""
+
+    # Push notifications (VAPID)
+    VAPID_PRIVATE_KEY: str = ""
+    VAPID_PUBLIC_KEY: str = ""
+    VAPID_CLAIMS_EMAIL: str = "mailto:admin@studycore.com.ng"
 
     class Config:
         env_file = ".env"

@@ -1,6 +1,15 @@
 """
 Unified AI service — Groq only, single client, validated output.
+
+All AI calls go through this module. No other file touches Groq directly.
+
+Design principles:
+  - Every function returns a typed result or None (never raises to caller)
+  - All JSON parsing is wrapped with validation
+  - Groq failures degrade gracefully — recall session still saves
+  - Prompts are in this file, not scattered across routers
 """
+
 from groq import Groq
 from app.core.config import settings
 from typing import Optional
@@ -11,6 +20,7 @@ _client: Optional[Groq] = None
 
 
 def _get_client() -> Groq:
+    """Lazy singleton — only instantiated when first needed."""
     global _client
     if _client is None:
         _client = Groq(api_key=settings.GROQ_API_KEY)
@@ -18,6 +28,10 @@ def _get_client() -> Groq:
 
 
 def _call(prompt: str, max_tokens: int = 800, temperature: float = 0.3) -> Optional[str]:
+    """
+    Single Groq call wrapper. Returns raw text or None on any failure.
+    All callers handle None gracefully.
+    """
     try:
         response = _get_client().chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -32,9 +46,15 @@ def _call(prompt: str, max_tokens: int = 800, temperature: float = 0.3) -> Optio
 
 
 def _parse_json(raw: Optional[str]) -> Optional[dict]:
+    """
+    Parse JSON from Groq response.
+    Handles markdown code fences the model sometimes adds.
+    Returns None if parsing fails — caller degrades gracefully.
+    """
     if not raw:
         return None
     try:
+        # Strip ```json ... ``` fences if present
         clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
         return json.loads(clean)
     except (json.JSONDecodeError, ValueError) as e:
@@ -43,6 +63,7 @@ def _parse_json(raw: Optional[str]) -> Optional[dict]:
 
 
 def _validate_gap_map(data: dict) -> dict:
+    """Ensure gap map has the expected keys with correct types."""
     return {
         "covered": [str(x) for x in data.get("covered", [])],
         "missing": [str(x) for x in data.get("missing", [])],
@@ -60,37 +81,73 @@ def analyze_recall(
     explanation: str,
     duration_seconds: int,
 ) -> Optional[dict]:
+    """
+    Core AI evaluation: compare student's explanation against key points rubric.
+
+    Returns validated gap map or None if AI fails.
+
+    Gap map schema:
+    {
+        "covered": ["key point the student addressed"],
+        "missing": ["key point not mentioned"],
+        "confused": ["concept the student got wrong or confused"],
+        "coverage_score": 7.5,   # 0–10, how much of the rubric was covered
+        "depth_score": 6.0,      # 0–10, quality of mechanistic explanation
+        "tip": "One actionable sentence for next session.",
+        "eval_question": "Question targeting biggest gap, to answer right now."
+    }
+    """
     rubric = "\n".join(f"- {kp}" for kp in key_points)
-    prompt = f"""You are a study coach evaluating a student's recall.
+
+    prompt = f"""You are a study coach evaluating a student's recall of a concept.
 
 CONCEPT: {concept_title}
 
-RUBRIC:
+RUBRIC — what a complete explanation must cover:
 {rubric}
 
 STUDENT'S EXPLANATION ({duration_seconds} seconds):
-{explanation or "No explanation provided."}
+{explanation or "The student submitted without writing an explanation."}
 
-Evaluate coverage (0-10) and depth (0-10). Identify covered, missing, confused points.
-Give one actionable tip and a closing question targeting the biggest gap.
+Evaluate the explanation against the rubric. Be honest and specific.
 
-Respond ONLY with valid JSON:
+COVERAGE SCORE (0–10): How much of the rubric did they address?
+  10 = every point covered accurately
+  7  = most points, minor gaps
+  5  = about half the rubric covered
+  3  = only surface-level, major gaps
+  0  = nothing meaningful
+
+DEPTH SCORE (0–10): Did they explain mechanisms, not just labels?
+  10 = clear causal reasoning throughout ("X causes Y because Z")
+  5  = some mechanism, mostly labels
+  0  = only named terms with no explanation
+
+EVAL QUESTION: One short question targeting the single most critical missing concept.
+  - Must be answerable in 2–4 sentences if they truly understand
+  - Target mechanism, not just definition
+  - Set to null if nothing is missing
+
+Respond ONLY with valid JSON, no markdown, no extra text:
 {{
-  "covered": [],
-  "missing": [],
-  "confused": [],
+  "covered": ["exact rubric point they addressed"],
+  "missing": ["exact rubric point they missed"],
+  "confused": ["concept they got wrong or mixed up"],
   "coverage_score": 7.0,
   "depth_score": 6.0,
-  "tip": "...",
-  "eval_question": "... or null"
+  "tip": "One specific actionable sentence for their next session.",
+  "eval_question": "Question to answer right now, or null"
 }}"""
+
     raw = _call(prompt, max_tokens=600)
     data = _parse_json(raw)
     if not data:
         return None
+
     try:
         return _validate_gap_map(data)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as e:
+        print(f"⚠️  Gap map validation failed: {e}")
         return None
 
 
@@ -100,32 +157,79 @@ def evaluate_closing_answer(
     answer: str,
     key_points: list[str],
 ) -> Optional[dict]:
+    """
+    Evaluate the student's answer to the closing eval question.
+    Called immediately after they submit their closing answer.
+
+    Returns:
+    {
+        "feedback": "2–3 sentence response",
+        "quality": "strong" | "partial" | "needs_work"
+    }
+    """
     rubric = "\n".join(f"- {kp}" for kp in key_points)
-    prompt = f"""CONCEPT: {concept_title}
-KEY POINTS:
+
+    prompt = f"""You are a study coach giving immediate feedback on a student's answer.
+
+CONCEPT: {concept_title}
+
+KEY CONCEPTS:
 {rubric}
-QUESTION: {question}
-STUDENT'S ANSWER: {answer or "No answer."}
-Give brief feedback (2-3 sentences) and quality: strong|partial|needs_work.
-JSON only: {{"feedback": "...", "quality": "strong"}}"""
+
+QUESTION ASKED: {question}
+
+STUDENT'S ANSWER: {answer or "No answer provided."}
+
+Give direct, specific feedback in 2–3 sentences maximum.
+- If correct: confirm what they got right, add one sharpening detail
+- If partial: name what they got right, name the specific gap
+- If wrong/blank: give the core correct answer in plain language
+
+Do NOT give a score. Do NOT be harsh.
+Frame gaps as "here's what to add" not "you got this wrong."
+
+Respond ONLY with valid JSON:
+{{"feedback": "Your 2–3 sentence feedback.", "quality": "strong|partial|needs_work"}}"""
+
     raw = _call(prompt, max_tokens=200)
     data = _parse_json(raw)
     if not data:
         return None
+
     quality = data.get("quality", "partial")
     if quality not in ("strong", "partial", "needs_work"):
         quality = "partial"
-    return {"feedback": str(data.get("feedback", ""))[:600], "quality": quality}
+
+    return {
+        "feedback": str(data.get("feedback", ""))[:600],
+        "quality": quality,
+    }
 
 
 def generate_curiosity_hook(concept_title: str, key_points: list[str]) -> Optional[str]:
-    rubric = "\n".join(f"- {kp}" for kp in key_points[:5])
-    prompt = f"""CONCEPT: {concept_title}
+    """
+    Generate one counterintuitive question to show BEFORE the recall session.
+    Primes encoding by creating a curiosity gap.
+    Returns a single sentence string or None.
+    """
+    rubric = "\n".join(f"- {kp}" for kp in key_points[:5])  # Max 5 points for hook
+
+    prompt = f"""You are a study coach priming a student before they explain a concept from memory.
+
+CONCEPT: {concept_title}
+
 KEY POINTS:
 {rubric}
-Write ONE short sentence (max 25 words) that is counterintuitive or surprising about this concept.
-Return ONLY the sentence. No JSON."""
+
+Write ONE short sentence that:
+- States something counterintuitive, surprising, or paradoxical about this concept
+- Creates a gap the student will want to close
+- Is directly answerable by deeply understanding the concept
+
+Maximum 25 words. Return ONLY the sentence. No JSON. No explanation."""
+
     raw = _call(prompt, max_tokens=60, temperature=0.7)
     if not raw:
         return None
+    # Strip any quotes the model may have added
     return raw.strip().strip('"').strip("'")[:300]

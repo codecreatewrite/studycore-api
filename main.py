@@ -6,6 +6,7 @@ from app.domains.auth.router import router as auth_router
 from app.domains.courses.router import router as courses_router
 from app.domains.concepts.router import router as concepts_router
 from app.domains.recall.router import router as recall_router
+from app.domains.push.router import router as push_router
 
 
 @asynccontextmanager
@@ -23,26 +24,20 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# CORS — must be explicit origins (no wildcard) when allow_credentials=True
-# Add every frontend URL you use here
-allowed_origins = [
-    settings.FRONTEND_URL,          # Production Vercel URL
-    "http://localhost:3000",        # Local dev
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,          # Required for cookies
+    allow_origins=[settings.FRONTEND_URL, "http://localhost:3000"],
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["Content-Type", "Authorization", "Accept"],
-    expose_headers=["Set-Cookie"],   # Allow frontend to see Set-Cookie header
+    expose_headers=["Set-Cookie"],
 )
 
 app.include_router(auth_router)
 app.include_router(courses_router)
 app.include_router(concepts_router)
 app.include_router(recall_router)
+app.include_router(push_router)
 
 
 @app.get("/health")
