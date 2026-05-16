@@ -38,6 +38,13 @@ def auth_callback(
 
     access_token = create_access_token(user.id)
 
+    # Choose redirect destination based on onboarding status
+    destination = (
+        f"{settings.FRONTEND_URL}/dashboard"
+        if user.onboarding_completed
+        else f"{settings.FRONTEND_URL}/onboarding"
+    )
+
     # Use an HTML page with JS to set the cookie and redirect.
     # This works cross-domain where a direct redirect + Set-Cookie
     # gets blocked by the browser's SameSite policy.
@@ -47,8 +54,6 @@ def auth_callback(
 <head><title>Signing in...</title></head>
 <body>
 <script>
-  // Store token in a way the frontend can read
-  // We pass it as a URL fragment so it never hits a server
   window.location.href = "{settings.FRONTEND_URL}/auth/callback#token={access_token}";
 </script>
 <p>Signing you in...</p>
@@ -56,7 +61,6 @@ def auth_callback(
 </html>
 """
     return HTMLResponse(content=html)
-
 
 @router.get("/logout")
 def logout():
@@ -73,3 +77,13 @@ def get_me(user=Depends(get_current_user_optional)):
         authenticated=True,
         user=UserResponse.model_validate(user),
     )
+
+@router.post("/onboarding-complete")
+def complete_onboarding(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Called after the user completes their first recall session."""
+    user.onboarding_completed = True
+    db.commit()
+    return {"success": True}

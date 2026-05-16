@@ -6,6 +6,7 @@ class UserResponse(BaseModel):
     email: str
     name: str
     picture: str | None
+    onboarding_completed: bool
 
     model_config = {"from_attributes": True}
 
