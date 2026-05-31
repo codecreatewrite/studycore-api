@@ -82,64 +82,119 @@ def analyze_recall(
     duration_seconds: int,
 ) -> Optional[dict]:
     """
-    Core AI evaluation: compare student's explanation against key points rubric.
+    Deep evaluation of a student's recall explanation.
+
+    Evaluates not just WHAT was mentioned but HOW it was explained:
+    - Mechanistic accuracy (not just label coverage)
+    - Logical flow and coherence
+    - Precision of language
+    - Identification of subtle errors and half-truths
+    - Depth of causal reasoning
 
     Returns validated gap map or None if AI fails.
-
-    Gap map schema:
-    {
-        "covered": ["key point the student addressed"],
-        "missing": ["key point not mentioned"],
-        "confused": ["concept the student got wrong or confused"],
-        "coverage_score": 7.5,   # 0–10, how much of the rubric was covered
-        "depth_score": 6.0,      # 0–10, quality of mechanistic explanation
-        "tip": "One actionable sentence for next session.",
-        "eval_question": "Question targeting biggest gap, to answer right now."
-    }
     """
     rubric = "\n".join(f"- {kp}" for kp in key_points)
+    minutes = duration_seconds // 60
+    seconds = duration_seconds % 60
+    duration_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
 
-    prompt = f"""You are a study coach evaluating a student's recall of a concept.
+    prompt = f"""You are an expert examiner and study coach evaluating a university student's explanation of a concept. Your job is to assess like a strict but fair academic — the way a professor would mark a short-answer exam question.
 
-CONCEPT: {concept_title}
+CONCEPT BEING RECALLED:
+{concept_title}
 
-RUBRIC — what a complete explanation must cover:
+MARKING RUBRIC (what a complete, accurate explanation must include):
 {rubric}
 
-STUDENT'S EXPLANATION ({duration_seconds} seconds):
-{explanation or "The student submitted without writing an explanation."}
+STUDENT'S EXPLANATION (written in {duration_str}):
+{explanation or "[Student submitted without writing an explanation]"}
 
-Evaluate the explanation against the rubric. Be honest and specific.
+---
 
-COVERAGE SCORE (0–10): How much of the rubric did they address?
-  10 = every point covered accurately
-  7  = most points, minor gaps
-  5  = about half the rubric covered
-  3  = only surface-level, major gaps
-  0  = nothing meaningful
+YOUR EVALUATION TASK:
 
-DEPTH SCORE (0–10): Did they explain mechanisms, not just labels?
-  10 = clear causal reasoning throughout ("X causes Y because Z")
-  5  = some mechanism, mostly labels
-  0  = only named terms with no explanation
+Assess the explanation with the rigour of an academic examiner. Do not just check if keywords appear — assess whether the student demonstrated genuine understanding. A student who writes "vasopressin causes water retention" has named the outcome but shown no understanding of mechanism. A student who writes "vasopressin binds V2 receptors, activating adenylyl cyclase via Gs, raising cAMP, which activates PKA and phosphorylates aquaporin-2, causing it to insert into the apical membrane of the collecting duct" has demonstrated mechanistic understanding.
 
-EVAL QUESTION: One short question targeting the single most critical missing concept.
-  - Must be answerable in 2–4 sentences if they truly understand
-  - Target mechanism, not just definition
-  - Set to null if nothing is missing
+WHAT TO ASSESS:
 
-Respond ONLY with valid JSON, no markdown, no extra text:
+1. COVERAGE — Which rubric points were addressed (even partially)?
+   List each rubric point and whether the student addressed it.
+
+2. ACCURACY — Were the things they said correct?
+   Identify any factual errors, confused concepts, or mixed-up mechanisms.
+   Even partial coverage with an error counts as "confused", not "covered".
+
+3. MECHANISTIC DEPTH — Did they explain WHY/HOW, or just WHAT?
+   Surface: "ADH increases water reabsorption"
+   Mechanistic: "ADH binds V2 → Gs → adenylyl cyclase → cAMP → PKA → AQP2 insertion"
+   Only mechanistic explanations earn full coverage credit.
+
+4. LOGICAL FLOW — Does the explanation build coherently?
+   Does one idea follow logically from the next, or is it a disconnected list of facts?
+   Poor flow suggests memorisation without integration.
+
+5. PRECISION — Are terms used correctly and specifically?
+   Vague: "it affects the cells"
+   Precise: "it acts on principal cells of the collecting duct"
+   Imprecision is a gap even if the general idea is present.
+
+6. SUBTLE ERRORS — Watch for:
+   - Cause/effect reversal ("low sodium causes ADH release" vs "high osmolarity causes ADH release")
+   - Incorrect receptor types, enzyme names, or anatomical locations
+   - Confusing similar mechanisms (e.g. ADH vs aldosterone actions)
+   - Overgeneralisation ("all diuretics block sodium" — false)
+   - Stating effects without triggers or vice versa
+
+SCORING:
+
+COVERAGE SCORE (0–10):
+  10 = Every rubric point addressed with mechanistic accuracy
+  8  = Most points covered with mostly accurate mechanisms
+  6  = About half covered, some mechanistic gaps
+  4  = Surface coverage, few mechanisms explained
+  2  = Only labels mentioned, no mechanisms
+  0  = Blank or completely incorrect
+
+DEPTH SCORE (0–10):
+  10 = Thorough causal chains throughout, clinical/applied connections made
+  7  = Good mechanistic reasoning with some gaps
+  4  = Mix of mechanisms and surface labels
+  1  = Mostly labels and definitions only
+
+ACTIONABLE TIP:
+  One specific sentence. Not general encouragement.
+  Target the single highest-value thing to add next time.
+  Format: "[Missing concept] — [why it matters / how it connects]"
+  Example: "Add the cAMP-PKA pathway — this is the mechanism that actually moves AQP2 to the membrane, which is what examiners test."
+
+EVAL QUESTION:
+  One short, specific question targeting the most critical unresolved gap.
+  Must be answerable in 2–4 sentences by someone who truly understands.
+  Should probe mechanism, not definition.
+  Set to null only if the explanation was genuinely complete.
+
+---
+
+Respond ONLY with valid JSON. No markdown. No explanation outside the JSON.
+
 {{
-  "covered": ["exact rubric point they addressed"],
-  "missing": ["exact rubric point they missed"],
-  "confused": ["concept they got wrong or mixed up"],
+  "covered": ["rubric point addressed with sufficient accuracy"],
+  "missing": ["rubric point not addressed or only named without explanation"],
+  "confused": ["specific error — what they said vs what is correct"],
   "coverage_score": 7.0,
   "depth_score": 6.0,
-  "tip": "One specific actionable sentence for their next session.",
-  "eval_question": "Question to answer right now, or null"
-}}"""
+  "tip": "Specific actionable sentence targeting the highest-value gap.",
+  "eval_question": "Mechanistic question targeting biggest gap, or null if complete"
+}}
 
-    raw = _call(prompt, max_tokens=600)
+CRITICAL RULES:
+- "covered" = addressed AND mechanistically accurate. Naming without mechanism = "missing".
+- "confused" must describe the specific error, not just flag it. E.g. "Said ADH acts on proximal tubule — it acts on collecting duct" not just "wrong location".
+- coverage_score and depth_score must be independent assessments. High coverage with low depth is valid (memorised all points, explained none mechanistically).
+- If explanation is blank or less than 10 words, set both scores to 0 and eval_question to the most fundamental rubric point.
+- Be honest. A score of 9/10 must be genuinely earned. Most first attempts should score 4–7."""
+
+    raw = _call(prompt, max_tokens=900, temperature=0.2)
     data = _parse_json(raw)
     if not data:
         return None
@@ -150,7 +205,6 @@ Respond ONLY with valid JSON, no markdown, no extra text:
         print(f"⚠️  Gap map validation failed: {e}")
         return None
 
-
 def evaluate_closing_answer(
     concept_title: str,
     question: str,
@@ -159,39 +213,44 @@ def evaluate_closing_answer(
 ) -> Optional[dict]:
     """
     Evaluate the student's answer to the closing eval question.
-    Called immediately after they submit their closing answer.
-
-    Returns:
-    {
-        "feedback": "2–3 sentence response",
-        "quality": "strong" | "partial" | "needs_work"
-    }
+    Assesses mechanistic accuracy, not just keyword presence.
     """
     rubric = "\n".join(f"- {kp}" for kp in key_points)
 
-    prompt = f"""You are a study coach giving immediate feedback on a student's answer.
+    prompt = f"""You are an expert examiner giving immediate feedback on a student's answer to a targeted question. This answer was written right after a recall session — the student's memory is still active.
 
 CONCEPT: {concept_title}
 
 KEY CONCEPTS:
 {rubric}
 
-QUESTION ASKED: {question}
+QUESTION ASKED:
+{question}
 
-STUDENT'S ANSWER: {answer or "No answer provided."}
+STUDENT'S ANSWER:
+{answer or "[No answer provided]"}
 
-Give direct, specific feedback in 2–3 sentences maximum.
-- If correct: confirm what they got right, add one sharpening detail
-- If partial: name what they got right, name the specific gap
-- If wrong/blank: give the core correct answer in plain language
+---
 
-Do NOT give a score. Do NOT be harsh.
-Frame gaps as "here's what to add" not "you got this wrong."
+Assess this answer like a professor marking a short-answer question.
+
+If CORRECT and mechanistic: confirm exactly what they got right, add one precision detail that sharpens their understanding further.
+
+If PARTIALLY CORRECT: name specifically what was right, then name the exact gap or error. Give the correct mechanism in plain language.
+
+If INCORRECT or BLANK: give the correct answer directly and concisely. Frame it as "here's what to know" not "you got this wrong."
+
+Rules:
+- Maximum 3 sentences. Every word must earn its place.
+- No hollow praise ("Great attempt!", "Well done!").
+- No vague feedback ("Think about the mechanism"). Be specific.
+- If they named the right concept but got the mechanism wrong, that is partial not correct.
+- The goal: student reads this and immediately knows exactly what to encode.
 
 Respond ONLY with valid JSON:
-{{"feedback": "Your 2–3 sentence feedback.", "quality": "strong|partial|needs_work"}}"""
+{{"feedback": "Your 2–3 sentence feedback here.", "quality": "strong|partial|needs_work"}}"""
 
-    raw = _call(prompt, max_tokens=200)
+    raw = _call(prompt, max_tokens=250, temperature=0.2)
     data = _parse_json(raw)
     if not data:
         return None
@@ -205,34 +264,39 @@ Respond ONLY with valid JSON:
         "quality": quality,
     }
 
-
 def generate_curiosity_hook(concept_title: str, key_points: list[str]) -> Optional[str]:
     """
-    Generate one counterintuitive question to show BEFORE the recall session.
-    Primes encoding by creating a curiosity gap.
-    Returns a single sentence string or None.
+    Generate one counterintuitive, high-curiosity question before recall.
+    Activates prior knowledge and creates a gap the student wants to close.
     """
-    rubric = "\n".join(f"- {kp}" for kp in key_points[:5])  # Max 5 points for hook
+    rubric = "\n".join(f"- {kp}" for kp in key_points[:5])
 
-    prompt = f"""You are a study coach priming a student before they explain a concept from memory.
+    prompt = f"""You are priming a university student before they attempt to recall a concept from memory.
 
 CONCEPT: {concept_title}
 
 KEY POINTS:
 {rubric}
 
-Write ONE short sentence that:
-- States something counterintuitive, surprising, or paradoxical about this concept
-- Creates a gap the student will want to close
-- Is directly answerable by deeply understanding the concept
+Write ONE sentence that creates intellectual tension before the student begins.
 
-Maximum 25 words. Return ONLY the sentence. No JSON. No explanation."""
+It must be:
+- Counterintuitive, paradoxical, or clinically surprising
+- Directly answerable by deeply understanding this concept
+- Specific — not generic ("did you know this is important?")
+- Under 25 words
 
-    raw = _call(prompt, max_tokens=60, temperature=0.7)
+Strong examples:
+- "A patient can have completely normal blood pressure readings during early haemorrhagic shock — why doesn't the body reveal this immediately?"
+- "Giving oxygen to a patient in sickle cell crisis can sometimes make vaso-occlusion worse — what does this tell you about the sickling mechanism?"
+- "The same hormone that saves you from dehydration is implicated in causing dangerous hyponatraemia — how?"
+
+Respond with ONLY the single sentence. No JSON. No quotes. No explanation."""
+
+    raw = _call(prompt, max_tokens=80, temperature=0.7)
     if not raw:
         return None
-    # Strip any quotes the model may have added
-    return raw.strip().strip('"').strip("'")[:300]
+    return raw.strip().strip('"').strip("'")[:350]
 
 def extract_concepts_from_text(
     text: str,
