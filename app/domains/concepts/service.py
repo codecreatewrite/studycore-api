@@ -105,24 +105,41 @@ class ConceptService:
         concept = ConceptService.get_one(db, user_id, concept_id)
         db.delete(concept)
         db.commit()
-
+    
     @staticmethod
     def get_due(db: Session, user_id: str) -> List[Concept]:
+        """
+        Return all concepts due for review, sorted by urgency:
+        ed1. Decaying (was stable, now slipping — highest priority)
+        2. Overdue (due_date in the past — ordered by most overdue first)
+        3. Due today
+        4. Ready (never recalled — lowest priority, no urgency)
+        """
+        from sqlalchemy import case, asc, desc
+
         now = datetime.now(timezone.utc)
+
         due = db.query(Concept).filter(
             Concept.user_id == user_id,
             Concept.lifecycle.in_([
-                ConceptLifecycle.READY,
-                ConceptLifecycle.LEARNING,
-                ConceptLifecycle.CONSOLIDATING,
-                ConceptLifecycle.MATURE,
-                ConceptLifecycle.DECAYING,
+                ConceptLifecycle.READY.value,
+                ConceptLifecycle.LEARNING.value,
+                ConceptLifecycle.CONSOLIDATING.value,
+                ConceptLifecycle.MATURE.value,
+                ConceptLifecycle.DECAYING.value,
             ]),
         ).filter(
-            (Concept.lifecycle == ConceptLifecycle.READY) |
+            (Concept.lifecycle == ConceptLifecycle.READY.value) |
             (Concept.due_date <= now)
         ).order_by(
-            Concept.lifecycle == ConceptLifecycle.DECAYING,
-            Concept.due_date.asc().nullsfirst(),
+            # Priority 1: Decaying always first
+            case(
+                (Concept.lifecycle == ConceptLifecycle.DECAYING.value, 0),
+                else_=1
+            ).asc(),
+            # Priority 2: Most overdue first (earliest due_date),
+            # READY concepts (null due_date) go last within their group
+            Concept.due_date.asc().nulls_last(),
         ).all()
+
         return due
