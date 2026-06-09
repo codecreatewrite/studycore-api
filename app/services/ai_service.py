@@ -303,48 +303,83 @@ def extract_concepts_from_text(
     course_title: str,
 ) -> Optional[list[str]]:
     """
-    Extract candidate concept titles from raw lecture text.
-    Returns a list of concept title strings, or None if AI fails.
+    Extract high-quality, assessable concept titles from lecture text.
 
-    Deliberately extracts TITLES ONLY — not key points.
-    The student writes key points themselves.
-    Max 15 concepts per extraction to prevent overwhelm.
+    The goal is not to summarise the text — it is to identify the discrete,
+    mechanistic ideas a student would need to explain under exam conditions.
+
+    Returns a list of concept title strings (max 12), or None if AI fails.
     """
     # Truncate to ~3000 words to stay within token limits
     words = text.split()
     if len(words) > 3000:
-        text = " ".join(words[:3000]) + "..."
+        text = " ".join(words[:3000]) + "\n[text truncated]"
 
-    prompt = f"""You are helping a university student identify what to study from their lecture notes.
+    prompt = f"""You are an expert academic who has spent years designing university exam questions. A student has given you their lecture notes and asked you to identify what they need to be able to explain deeply for their exam.
 
 COURSE: {course_title}
 
 LECTURE TEXT:
 {text}
 
-Extract the key concepts a student would need to understand and be able to explain for an exam.
+---
 
-Rules:
-- Extract CONCEPT TITLES ONLY — not definitions, not explanations
-- Each title must be specific and testable (a student could be asked about it in an exam)
-- Maximum 12 concepts — quality over quantity
-- Prefer mechanistic concepts over pure vocabulary
-- Skip vague headings like "Introduction" or "Overview"
+YOUR TASK:
+Extract concept titles that meet ALL of the following criteria:
 
-Good examples:
-- "Mechanism of action of beta-blockers"
-- "Frank-Starling law of the heart"
-- "Renin-angiotensin-aldosterone system"
+CRITERIA FOR A GOOD CONCEPT TITLE:
+1. SPECIFIC — narrow enough that a student could explain it in 2–5 minutes
+2. MECHANISTIC — about a process, mechanism, pathway, or causal relationship — not just a name or category
+3. ASSESSABLE — an examiner could ask "explain X" and evaluate the answer against clear criteria
+4. STANDALONE — the concept makes sense on its own without needing five other concepts explained first
+5. HIGH-YIELD — the kind of thing that actually appears on exams, not background context
 
-Bad examples:
-- "The heart" (too broad)
-- "Important concepts" (not specific)
-- "Summary" (not a concept)
+WHAT TO EXTRACT:
+- Mechanisms of action ("Mechanism of action of beta-blockers on heart rate")
+- Physiological processes ("Starling forces governing capillary fluid exchange")
+- Pathophysiology ("How insulin resistance leads to type 2 diabetes")
+- Clinical reasoning ("Why ACE inhibitors cause hyperkalaemia")
+- Regulatory pathways ("Renin-angiotensin-aldosterone system regulation")
+- Disease mechanisms ("Pathophysiology of acute respiratory distress syndrome")
 
-Respond ONLY with valid JSON, no markdown:
+WHAT NOT TO EXTRACT:
+- Pure vocabulary ("Definition of homeostasis") — too shallow, no mechanism to assess
+- Broad topics ("The cardiovascular system") — too wide, not a single explainable concept
+- Historical/contextual facts ("Discovery of insulin in 1921") — not mechanistic
+- Lists ("Types of diuretics") — a list is not an explainable concept
+- Section headings ("Introduction", "Overview", "Summary") — not concepts
+- Anything the student cannot be asked to "explain the mechanism of"
+
+CONCEPT TITLE FORMAT:
+- Start with a noun phrase, not a question
+- Include the mechanism/process in the title where possible
+- Be specific about what aspect is being addressed
+- 5–12 words is ideal
+
+GOOD TITLE EXAMPLES:
+✓ "Mechanism of tubuloglomerular feedback in autoregulation of GFR"
+✓ "How aldosterone increases sodium reabsorption in the collecting duct"
+✓ "Pathophysiology of acute tubular necrosis following ischaemia"
+✓ "Why loop diuretics cause hypokalaemia"
+✓ "Compensatory mechanisms in hypovolaemic shock"
+
+BAD TITLE EXAMPLES:
+✗ "The kidney" — too broad
+✗ "Diuretics" — category not mechanism
+✗ "Sodium" — not a concept
+✗ "Important electrolytes and their functions" — a list
+✗ "Introduction to renal physiology" — contextual heading
+
+QUANTITY:
+Extract between 6 and 12 concepts. Quality over quantity.
+If the text only contains 4 genuinely assessable concepts, return 4.
+Do not pad with weak concepts to reach a higher number.
+If the text is too vague or shallow to yield good concepts, return fewer titles with a note.
+
+Respond ONLY with valid JSON. No markdown. No explanation:
 {{"concepts": ["Concept title 1", "Concept title 2", "Concept title 3"]}}"""
 
-    raw = _call(prompt, max_tokens=400, temperature=0.3)
+    raw = _call(prompt, max_tokens=500, temperature=0.2)
     data = _parse_json(raw)
     if not data:
         return None
@@ -353,5 +388,19 @@ Respond ONLY with valid JSON, no markdown:
     if not isinstance(concepts, list):
         return None
 
-    # Validate and clean
-    return [str(c).strip() for c in concepts if isinstance(c, str) and c.strip()][:12]
+    # Clean, validate, deduplicate
+    seen = set()
+    result = []
+    for c in concepts:
+        if not isinstance(c, str):
+            continue
+        cleaned = c.strip().strip('"').strip("'")
+        if len(cleaned) < 5:
+            continue
+        lower = cleaned.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        result.append(cleaned)
+
+    return result[:12]
