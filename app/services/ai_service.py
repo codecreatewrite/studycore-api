@@ -15,6 +15,7 @@ from app.core.config import settings
 from typing import Optional
 import json
 import re
+import time
 
 _client: Optional[Groq] = None
 
@@ -29,33 +30,48 @@ def _get_client() -> Groq:
 
 def _call(prompt: str, max_tokens: int = 800, temperature: float = 0.3) -> Optional[str]:
     """
-    Single Groq call wrapper. Returns raw text or None on any failure.
+    Single Groq call wrapper with one retry on transient failure.
+    Returns raw text or None on any failure.
     All callers handle None gracefully.
     """
-    try:
-        response = _get_client().chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"⚠️  Groq call failed: {e}")
-        return None
+    for attempt in range(2):
+        try:
+            response = _get_client().chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            if attempt == 0:
+                print(f"⚠️  Groq call failed (attempt 1), retrying in 2s: {e}")
+                time.sleep(2)
+            else:
+                print(f"⚠️  Groq call failed after retry: {e}")
+                return None
 
 
 def _parse_json(raw: Optional[str]) -> Optional[dict]:
     """
-    Parse JSON from Groq response.
-    Handles markdown code fences the model sometimes adds.
+    Parse JSON from Groq response robustly.
+    Handles:
+      - markdown code fences (```json ... ```)
+      - preamble text before the JSON block
+      - trailing text after the JSON block
     Returns None if parsing fails — caller degrades gracefully.
     """
     if not raw:
         return None
     try:
-        # Strip ```json ... ``` fences if present
-        clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+        # Strategy 1: find the outermost { ... } block in the response.
+        # This handles preamble text the model sometimes adds despite instructions.
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+
+        # Strategy 2: fallback — strip markdown fences and parse directly
+        clean = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip())
         return json.loads(clean)
     except (json.JSONDecodeError, ValueError) as e:
         print(f"⚠️  JSON parse failed: {e}\nRaw: {raw[:200]}")
@@ -84,12 +100,11 @@ def analyze_recall(
     """
     Deep evaluation of a student's recall explanation.
 
-    Evaluates not just WHAT was mentioned but HOW it was explained:
-    - Mechanistic accuracy (not just label coverage)
-    - Logical flow and coherence
-    - Precision of language
-    - Identification of subtle errors and half-truths
-    - Depth of causal reasoning
+    Evaluates not just WHAT was mentioned but HOW it was explained.
+    Automatically adapts its evaluation lens to the type of concept:
+    mechanistic (pathways, pharmacology), process-based (clinical procedures,
+    community health frameworks), or conceptual/applied (psychiatry, management,
+    ethics). Works equally well across all nursing and health science domains.
 
     Returns validated gap map or None if AI fails.
     """
@@ -98,12 +113,15 @@ def analyze_recall(
     seconds = duration_seconds % 60
     duration_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
 
-    prompt = f"""You are an expert examiner and study coach evaluating a university student's explanation of a concept. Your job is to assess like a strict but fair academic — the way a professor would mark a short-answer exam question.
+    # Scale max_tokens to rubric size so long rubrics don't get clipped
+    dynamic_max_tokens = min(1400, 900 + len(key_points) * 30)
+
+    prompt = f"""You are an expert university examiner and study coach evaluating a nursing/health science student's explanation of a concept.
 
 CONCEPT BEING RECALLED:
 {concept_title}
 
-MARKING RUBRIC (what a complete, accurate explanation must include):
+MARKING RUBRIC (what a complete, accurate explanation must cover):
 {rubric}
 
 STUDENT'S EXPLANATION (written in {duration_str}):
@@ -113,88 +131,115 @@ STUDENT'S EXPLANATION (written in {duration_str}):
 
 YOUR EVALUATION TASK:
 
-Assess the explanation with the rigour of an academic examiner. Do not just check if keywords appear — assess whether the student demonstrated genuine understanding. A student who writes "vasopressin causes water retention" has named the outcome but shown no understanding of mechanism. A student who writes "vasopressin binds V2 receptors, activating adenylyl cyclase via Gs, raising cAMP, which activates PKA and phosphorylates aquaporin-2, causing it to insert into the apical membrane of the collecting duct" has demonstrated mechanistic understanding.
+Before scoring, silently identify what TYPE of concept this is, because the standard of depth changes accordingly:
 
-WHAT TO ASSESS:
+TYPE A — MECHANISTIC (biochemical pathways, drug mechanisms, physiology, pathophysiology):
+  Depth requires explaining WHY/HOW at a molecular or physiological level.
+  Surface: "ADH increases water reabsorption"
+  Mechanistic: "ADH binds V2 receptors → Gs → adenylyl cyclase → cAMP → PKA → AQP2 insertion into apical membrane of collecting duct"
+  Naming an outcome without its mechanism = surface only.
 
-1. COVERAGE — Which rubric points were addressed (even partially)?
-   List each rubric point and whether the student addressed it.
+TYPE B — PROCESS/PROCEDURAL (clinical skills, assessment steps, public health frameworks, care protocols):
+  Depth requires correct sequencing, accurate criteria, and rationale for each step.
+  Surface: "Assess the patient"
+  Deep: "Inspect for pallor and jaundice, palpate for hepatomegaly starting from the RIF, percuss to define liver span, auscultate for bowel sounds — sequence matters because palpation after auscultation avoids disturbing bowel sounds"
+  Knowing WHAT to do without knowing WHY it is done that way = surface only.
 
-2. ACCURACY — Were the things they said correct?
-   Identify any factual errors, confused concepts, or mixed-up mechanisms.
-   Even partial coverage with an error counts as "confused", not "covered".
-
-3. MECHANISTIC DEPTH — Did they explain WHY/HOW, or just WHAT?
-   Surface: "ADH increases water reabsorption"
-   Mechanistic: "ADH binds V2 → Gs → adenylyl cyclase → cAMP → PKA → AQP2 insertion"
-   Only mechanistic explanations earn full coverage credit.
-
-4. LOGICAL FLOW — Does the explanation build coherently?
-   Does one idea follow logically from the next, or is it a disconnected list of facts?
-   Poor flow suggests memorisation without integration.
-
-5. PRECISION — Are terms used correctly and specifically?
-   Vague: "it affects the cells"
-   Precise: "it acts on principal cells of the collecting duct"
-   Imprecision is a gap even if the general idea is present.
-
-6. SUBTLE ERRORS — Watch for:
-   - Cause/effect reversal ("low sodium causes ADH release" vs "high osmolarity causes ADH release")
-   - Incorrect receptor types, enzyme names, or anatomical locations
-   - Confusing similar mechanisms (e.g. ADH vs aldosterone actions)
-   - Overgeneralisation ("all diuretics block sodium" — false)
-   - Stating effects without triggers or vice versa
-
-SCORING:
-
-COVERAGE SCORE (0–10):
-  10 = Every rubric point addressed with mechanistic accuracy
-  8  = Most points covered with mostly accurate mechanisms
-  6  = About half covered, some mechanistic gaps
-  4  = Surface coverage, few mechanisms explained
-  2  = Only labels mentioned, no mechanisms
-  0  = Blank or completely incorrect
-
-DEPTH SCORE (0–10):
-  10 = Thorough causal chains throughout, clinical/applied connections made
-  7  = Good mechanistic reasoning with some gaps
-  4  = Mix of mechanisms and surface labels
-  1  = Mostly labels and definitions only
-
-ACTIONABLE TIP:
-  One specific sentence. Not general encouragement.
-  Target the single highest-value thing to add next time.
-  Format: "[Missing concept] — [why it matters / how it connects]"
-  Example: "Add the cAMP-PKA pathway — this is the mechanism that actually moves AQP2 to the membrane, which is what examiners test."
-
-EVAL QUESTION:
-  One short, specific question targeting the most critical unresolved gap.
-  Must be answerable in 2–4 sentences by someone who truly understands.
-  Should probe mechanism, not definition.
-  Set to null only if the explanation was genuinely complete.
+TYPE C — CONCEPTUAL/APPLIED (psychiatry, mental health, management, ethics, community models, nutrition principles):
+  Depth requires accurate use of concepts, correct application to scenarios, and understanding of implications.
+  Surface: "Therapeutic communication is important in mental health"
+  Deep: "Therapeutic communication involves active listening, empathy, and non-judgmental responses; in psychosis specifically, you avoid challenging delusions directly because confrontation increases distress and impairs the therapeutic alliance, whereas validating the emotional experience without reinforcing the delusion maintains trust"
+  Naming concepts without applying them or explaining their significance = surface only.
 
 ---
 
-Respond ONLY with valid JSON. No markdown. No explanation outside the JSON.
+ASSESS THE EXPLANATION ACROSS THESE DIMENSIONS:
+
+1. COVERAGE — Which rubric points were actually addressed?
+   A point is covered only if the student addressed it with sufficient accuracy for its concept type.
+   A point is MISSING if it was not mentioned, or only mentioned as a label with no explanation.
+   A point is CONFUSED if it was addressed but with an error, reversal, or significant inaccuracy.
+
+2. ACCURACY — Were the things stated correct?
+   Flag: factual errors, cause/effect reversals, wrong names/locations/criteria, confused similar concepts.
+   Example errors to catch: wrong receptor type, inverted physiology, mixed-up drug classes,
+   misattributed frameworks, incorrect diagnostic criteria, wrong stage/trimester/phase.
+
+3. DEPTH — Was the explanation deep for its concept type (A/B/C as identified above)?
+   Only credit depth when the student demonstrated understanding appropriate to the concept type.
+   For Type A: look for causal chains, not just outcomes.
+   For Type B: look for sequencing rationale, not just step listing.
+   For Type C: look for applied understanding, not just concept naming.
+
+4. LOGICAL FLOW — Does the explanation build coherently?
+   Do ideas connect logically, or is it a disconnected list?
+   Poor flow often reveals memorisation without integration.
+
+5. PRECISION — Are terms used correctly and specifically?
+   Vague: "it affects the body" / "there are complications" / "the nurse should respond"
+   Precise: specific anatomy, specific drugs, specific criteria, specific actions with rationale.
+
+6. SUBTLE ERRORS — Watch especially for:
+   - Cause/effect reversal
+   - Confusing similar conditions, drugs, or frameworks
+   - Overgeneralisation ("all diuretics..." / "all psychiatric patients...")
+   - Correct concept applied to wrong context or population
+   - Omitting key contraindications, exceptions, or complications that examiners test
+
+---
+
+SCORING:
+
+COVERAGE SCORE (0–10): How completely did they address the rubric?
+  10 = Every rubric point addressed accurately
+  8  = Most points covered with mostly accurate content
+  6  = About half covered
+  4  = Some points mentioned but mostly surface
+  2  = Very little coverage, mostly labels
+  0  = Blank, irrelevant, or completely incorrect
+
+DEPTH SCORE (0–10): How deeply did they explain what they covered? (Scored for the concept type identified)
+  10 = Thorough, well-reasoned explanations with applied connections throughout
+  7  = Good depth with some gaps in reasoning or application
+  4  = Mix of deep and surface — some mechanisms/rationale, some labels only
+  1  = Almost entirely surface — labels and definitions with no reasoning
+
+These scores are INDEPENDENT. High coverage, low depth = memorised all points but explained none.
+High depth, low coverage = explained a few things brilliantly but missed most of the rubric.
+
+ACTIONABLE TIP:
+  One specific sentence. Not "review the concept." Not "well done."
+  Target the single highest-value thing to add or correct.
+  Format: "[Specific gap or error] — [why it matters / how it connects to the bigger picture]"
+
+EVAL QUESTION:
+  One short, specific question targeting the most critical unresolved gap.
+  Must be answerable in 2–4 sentences by someone who genuinely understands.
+  Should probe understanding, not recall of a definition.
+  Set to null ONLY if the explanation was genuinely complete.
+
+---
+
+Respond ONLY with valid JSON. No preamble. No markdown. No text outside the JSON.
 
 {{
   "covered": ["rubric point addressed with sufficient accuracy"],
-  "missing": ["rubric point not addressed or only named without explanation"],
+  "missing": ["rubric point not addressed or named without explanation"],
   "confused": ["specific error — what they said vs what is correct"],
   "coverage_score": 7.0,
   "depth_score": 6.0,
   "tip": "Specific actionable sentence targeting the highest-value gap.",
-  "eval_question": "Mechanistic question targeting biggest gap, or null if complete"
+  "eval_question": "Targeted question probing the biggest gap, or null if complete"
 }}
 
 CRITICAL RULES:
-- "covered" = addressed AND mechanistically accurate. Naming without mechanism = "missing".
-- "confused" must describe the specific error, not just flag it. E.g. "Said ADH acts on proximal tubule — it acts on collecting duct" not just "wrong location".
-- coverage_score and depth_score must be independent assessments. High coverage with low depth is valid (memorised all points, explained none mechanistically).
-- If explanation is blank or less than 10 words, set both scores to 0 and eval_question to the most fundamental rubric point.
-- Be honest. A score of 9/10 must be genuinely earned. Most first attempts should score 4–7."""
+- "covered" = addressed AND sufficiently accurate for its concept type. Named without explanation = "missing".
+- "confused" must describe the specific error, not just flag it. E.g. "Said loop diuretics act on the proximal tubule — they act on the thick ascending limb of the loop of Henle" not just "wrong location".
+- coverage_score and depth_score must reflect independent assessments.
+- If the explanation is blank or fewer than 10 words, set both scores to 0 and set eval_question to the most fundamental rubric point.
+- Be honest. A score of 9/10 must be genuinely earned. Most first attempts score 4–7."""
 
-    raw = _call(prompt, max_tokens=900, temperature=0.2)
+    raw = _call(prompt, max_tokens=dynamic_max_tokens, temperature=0.2)
     data = _parse_json(raw)
     if not data:
         return None
@@ -205,6 +250,7 @@ CRITICAL RULES:
         print(f"⚠️  Gap map validation failed: {e}")
         return None
 
+
 def evaluate_closing_answer(
     concept_title: str,
     question: str,
@@ -213,7 +259,8 @@ def evaluate_closing_answer(
 ) -> Optional[dict]:
     """
     Evaluate the student's answer to the closing eval question.
-    Assesses mechanistic accuracy, not just keyword presence.
+    Assesses genuine understanding appropriate to the concept type,
+    not just keyword presence.
     """
     rubric = "\n".join(f"- {kp}" for kp in key_points)
 
@@ -232,25 +279,30 @@ STUDENT'S ANSWER:
 
 ---
 
-Assess this answer like a professor marking a short-answer question.
+Assess this answer like a professor marking a short-answer question. The concept may be mechanistic (pathways, pharmacology), procedural (clinical steps, protocols), or conceptual/applied (psychiatry, management, ethics) — apply the appropriate standard.
 
-If CORRECT and mechanistic: confirm exactly what they got right, add one precision detail that sharpens their understanding further.
+If CORRECT and sufficiently deep: confirm exactly what they got right, then add one precision detail that sharpens their understanding further.
 
-If PARTIALLY CORRECT: name specifically what was right, then name the exact gap or error. Give the correct mechanism in plain language.
+If PARTIALLY CORRECT: name specifically what was right, then name the exact gap or error. Give the correct content plainly.
 
 If INCORRECT or BLANK: give the correct answer directly and concisely. Frame it as "here's what to know" not "you got this wrong."
 
 Rules:
 - Maximum 3 sentences. Every word must earn its place.
 - No hollow praise ("Great attempt!", "Well done!").
-- No vague feedback ("Think about the mechanism"). Be specific.
-- If they named the right concept but got the mechanism wrong, that is partial not correct.
+- No vague feedback ("Think about the mechanism" / "Consider the context"). Be specific.
+- If they named the right concept but explained it wrong, that is partial not correct.
 - The goal: student reads this and immediately knows exactly what to encode.
 
 Respond ONLY with valid JSON:
-{{"feedback": "Your 2–3 sentence feedback here.", "quality": "strong|partial|needs_work"}}"""
+{{"feedback": "Your 2–3 sentence feedback here.", "quality": "strong|partial|needs_work"}}
 
-    raw = _call(prompt, max_tokens=250, temperature=0.2)
+Quality definitions:
+- "strong" = correct and sufficiently deep for the concept type
+- "partial" = right idea, wrong or missing explanation/mechanism/rationale
+- "needs_work" = incorrect, confused, or blank"""
+
+    raw = _call(prompt, max_tokens=300, temperature=0.2)
     data = _parse_json(raw)
     if not data:
         return None
@@ -260,18 +312,20 @@ Respond ONLY with valid JSON:
         quality = "partial"
 
     return {
-        "feedback": str(data.get("feedback", ""))[:600],
+        "feedback": str(data.get("feedback", ""))[:800],
         "quality": quality,
     }
+
 
 def generate_curiosity_hook(concept_title: str, key_points: list[str]) -> Optional[str]:
     """
     Generate one counterintuitive, high-curiosity question before recall.
     Activates prior knowledge and creates a gap the student wants to close.
+    Works across all concept types: mechanistic, procedural, and conceptual.
     """
     rubric = "\n".join(f"- {kp}" for kp in key_points[:5])
 
-    prompt = f"""You are priming a university student before they attempt to recall a concept from memory.
+    prompt = f"""You are priming a university nursing/health science student before they attempt to recall a concept from memory.
 
 CONCEPT: {concept_title}
 
@@ -285,11 +339,14 @@ It must be:
 - Directly answerable by deeply understanding this concept
 - Specific — not generic ("did you know this is important?")
 - Under 25 words
+- Appropriate to the concept type — mechanistic paradox for physiology/pharmacology, clinical dilemma for procedural concepts, real-world contradiction for conceptual/management topics
 
-Strong examples:
+Strong examples across concept types:
 - "A patient can have completely normal blood pressure readings during early haemorrhagic shock — why doesn't the body reveal this immediately?"
 - "Giving oxygen to a patient in sickle cell crisis can sometimes make vaso-occlusion worse — what does this tell you about the sickling mechanism?"
-- "The same hormone that saves you from dehydration is implicated in causing dangerous hyponatraemia — how?"
+- "A nurse who follows every protocol perfectly can still cause serious psychological harm — which psychiatric nursing principle explains this?"
+- "A community health intervention with high coverage can actually make a disease problem worse — under what condition does this happen?"
+- "A patient scoring high on a depression scale may need less immediate intervention than one scoring low — when is this true and why?"
 
 Respond with ONLY the single sentence. No JSON. No quotes. No explanation."""
 
@@ -297,6 +354,7 @@ Respond with ONLY the single sentence. No JSON. No quotes. No explanation."""
     if not raw:
         return None
     return raw.strip().strip('"').strip("'")[:350]
+
 
 def extract_concepts_from_text(
     text: str,
@@ -306,16 +364,20 @@ def extract_concepts_from_text(
     Extract high-quality, assessable concept titles from lecture text.
 
     The goal is not to summarise the text — it is to identify the discrete,
-    mechanistic ideas a student would need to explain under exam conditions.
+    explainable ideas a student would need to demonstrate understanding of
+    under exam conditions, regardless of whether the course is mechanistic,
+    procedural, or conceptual.
 
+    Works across all nursing and health science course types.
     Returns a list of concept title strings (max 12), or None if AI fails.
     """
     # Truncate to ~3000 words to stay within token limits
     words = text.split()
     if len(words) > 3000:
-        text = " ".join(words[:3000]) + "\n[text truncated]"
+        text = " ".join(words[:3000]) + "\n[text truncated at 3000 words]"
+        print(f"⚠️  extract_concepts: text truncated from {len(words)} words to 3000")
 
-    prompt = f"""You are an expert academic who has spent years designing university exam questions. A student has given you their lecture notes and asked you to identify what they need to be able to explain deeply for their exam.
+    prompt = f"""You are an expert academic who has spent years designing university exam questions across nursing and health science disciplines. A student has given you their lecture notes and asked you to identify what they need to be able to explain deeply for their exam.
 
 COURSE: {course_title}
 
@@ -325,61 +387,66 @@ LECTURE TEXT:
 ---
 
 YOUR TASK:
-Extract concept titles that meet ALL of the following criteria:
+Extract concept titles that are genuinely worth studying deeply. These titles will become prompts for active recall practice — the student will attempt to explain each one from memory.
 
-CRITERIA FOR A GOOD CONCEPT TITLE:
-1. SPECIFIC — narrow enough that a student could explain it in 2–5 minutes
-2. MECHANISTIC — about a process, mechanism, pathway, or causal relationship — not just a name or category
-3. ASSESSABLE — an examiner could ask "explain X" and evaluate the answer against clear criteria
-4. STANDALONE — the concept makes sense on its own without needing five other concepts explained first
-5. HIGH-YIELD — the kind of thing that actually appears on exams, not background context
+A good concept title must meet ALL of these criteria:
 
-WHAT TO EXTRACT:
-- Mechanisms of action ("Mechanism of action of beta-blockers on heart rate")
-- Physiological processes ("Starling forces governing capillary fluid exchange")
-- Pathophysiology ("How insulin resistance leads to type 2 diabetes")
-- Clinical reasoning ("Why ACE inhibitors cause hyperkalaemia")
-- Regulatory pathways ("Renin-angiotensin-aldosterone system regulation")
-- Disease mechanisms ("Pathophysiology of acute respiratory distress syndrome")
+1. EXPLAINABLE — a student can be asked "explain this" and produce a coherent answer that can be evaluated
+2. SPECIFIC — narrow enough to explain well in 2–5 minutes; not a whole topic, not a single word
+3. ASSESSABLE — there is a clear right/wrong or better/worse way to explain it
+4. STANDALONE — makes sense on its own without requiring five other concepts to be explained first
+5. HIGH-YIELD — the kind of thing that actually appears on exams or matters in clinical/professional practice
 
-WHAT NOT TO EXTRACT:
-- Pure vocabulary ("Definition of homeostasis") — too shallow, no mechanism to assess
-- Broad topics ("The cardiovascular system") — too wide, not a single explainable concept
-- Historical/contextual facts ("Discovery of insulin in 1921") — not mechanistic
-- Lists ("Types of diuretics") — a list is not an explainable concept
-- Section headings ("Introduction", "Overview", "Summary") — not concepts
-- Anything the student cannot be asked to "explain the mechanism of"
+WHAT COUNTS AS A GOOD CONCEPT — examples across course types:
+
+For MECHANISTIC courses (physiology, pathophysiology, pharmacology):
+  ✓ "Mechanism by which loop diuretics cause hypokalaemia"
+  ✓ "How insulin resistance leads to hyperglycaemia in type 2 diabetes"
+  ✓ "Renin-angiotensin-aldosterone system and blood pressure regulation"
+  ✓ "Why beta-blockers are contraindicated in asthma"
+
+For PROCEDURAL/CLINICAL courses (medical-surgical, reproductive health, nutrition):
+  ✓ "Steps and rationale for abdominal assessment in a post-operative patient"
+  ✓ "Partograph interpretation and when to escalate care in labour"
+  ✓ "Nursing management of a patient with acute severe asthma"
+  ✓ "Nutritional requirements and supplementation in pregnancy"
+
+For PROCESS/FRAMEWORK courses (community health, public health):
+  ✓ "Levels of prevention and their application in communicable disease control"
+  ✓ "Epidemiological triad and how breaking any link interrupts disease transmission"
+  ✓ "How herd immunity works and the threshold concept"
+  ✓ "Steps of the community health nursing process"
+
+For CONCEPTUAL/APPLIED courses (psychiatry, mental health, management, ethics):
+  ✓ "Principles of therapeutic communication in psychiatric nursing"
+  ✓ "Biopsychosocial model of mental illness and its nursing implications"
+  ✓ "Delegation in nursing: principles, criteria, and accountability"
+  ✓ "How stigma affects help-seeking behaviour in mental health"
+  ✓ "Conflict resolution strategies and when to use each in a nursing team"
+
+WHAT TO EXCLUDE:
+✗ Broad topics ("The cardiovascular system", "Mental health") — too wide
+✗ Pure vocabulary ("Definition of homeostasis", "What is schizophrenia") — no depth to evaluate
+✗ Lists as topics ("Types of diuretics", "Classifications of mental illness") — a list is not an explainable concept
+✗ Contextual or historical background ("History of nursing", "Introduction to pharmacology") — not assessable
+✗ Section headings ("Overview", "Summary", "Introduction") — not concepts
+✗ Anything where a student cannot demonstrate genuine understanding (vs just recall a fact)
 
 CONCEPT TITLE FORMAT:
-- Start with a noun phrase, not a question
-- Include the mechanism/process in the title where possible
-- Be specific about what aspect is being addressed
-- 5–12 words is ideal
-
-GOOD TITLE EXAMPLES:
-✓ "Mechanism of tubuloglomerular feedback in autoregulation of GFR"
-✓ "How aldosterone increases sodium reabsorption in the collecting duct"
-✓ "Pathophysiology of acute tubular necrosis following ischaemia"
-✓ "Why loop diuretics cause hypokalaemia"
-✓ "Compensatory mechanisms in hypovolaemic shock"
-
-BAD TITLE EXAMPLES:
-✗ "The kidney" — too broad
-✗ "Diuretics" — category not mechanism
-✗ "Sodium" — not a concept
-✗ "Important electrolytes and their functions" — a list
-✗ "Introduction to renal physiology" — contextual heading
+- Noun phrase or "How/Why" construction — not a question
+- Include the specific aspect being addressed (not just the topic name)
+- Specific enough that two different titles could not be confused
+- 5–14 words is the sweet spot
 
 QUANTITY:
 Extract between 6 and 12 concepts. Quality over quantity.
-If the text only contains 4 genuinely assessable concepts, return 4.
-Do not pad with weak concepts to reach a higher number.
-If the text is too vague or shallow to yield good concepts, return fewer titles with a note.
+If the text only yields 4 genuinely assessable concepts, return 4 — do not pad.
+Do not force mechanistic framing onto procedural or conceptual content, or vice versa.
 
-Respond ONLY with valid JSON. No markdown. No explanation:
+Respond ONLY with valid JSON. No preamble. No markdown. No text outside the JSON.
 {{"concepts": ["Concept title 1", "Concept title 2", "Concept title 3"]}}"""
 
-    raw = _call(prompt, max_tokens=500, temperature=0.2)
+    raw = _call(prompt, max_tokens=600, temperature=0.2)
     data = _parse_json(raw)
     if not data:
         return None
@@ -404,3 +471,4 @@ Respond ONLY with valid JSON. No markdown. No explanation:
         result.append(cleaned)
 
     return result[:12]
+
