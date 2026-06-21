@@ -373,9 +373,9 @@ def extract_concepts_from_text(
     """
     # Truncate to ~3000 words to stay within token limits
     words = text.split()
-    if len(words) > 3000:
-        text = " ".join(words[:3000]) + "\n[text truncated at 3000 words]"
-        print(f"⚠️  extract_concepts: text truncated from {len(words)} words to 3000")
+    if len(words) > 4500:
+        text = " ".join(words[:4500]) + "\n[text truncated at 4500 words]"
+        print(f"⚠️  extract_concepts: text truncated from {len(words)} words to 4500")
 
     prompt = f"""You are an expert academic who has spent years designing university exam questions across nursing and health science disciplines. A student has given you their lecture notes and asked you to identify what they need to be able to explain deeply for their exam.
 
