@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 
 
 class StartRecallResponse(BaseModel):
@@ -15,14 +15,21 @@ class StartRecallResponse(BaseModel):
 class SubmitRecallRequest(BaseModel):
     concept_id: str
     explanation: str = Field(..., min_length=1, max_length=10000)
-    duration_seconds: int = Field(..., ge=5, le=3600)
+    duration_seconds: int = Field(..., ge=5)
     fsrs_rating: int = Field(..., ge=1, le=4)
 
 
 class GapMapResponse(BaseModel):
-    covered: List[str]
-    missing: List[str]
-    confused: List[str]
+    # Concept classification — now declared explicitly by AI
+    concept_type: str = "B"                    # A / B / C / D / E
+    concept_type_label: str = "Clinical/Process"
+
+    # Four-way classification (upgrade from three-way)
+    covered: list[str]
+    surface: list[str] = []    # Named but not explained — new, between covered and missing
+    missing: list[str]
+    confused: list[str]
+
     coverage_score: float
     depth_score: float
     tip: str
@@ -46,4 +53,4 @@ class SubmitClosingAnswerRequest(BaseModel):
 
 class SubmitClosingAnswerResponse(BaseModel):
     feedback: str
-    quality: str
+    quality: str   # strong | partial | needs_work
