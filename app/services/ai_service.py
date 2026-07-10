@@ -412,76 +412,82 @@ LECTURE TEXT:
 ---
 
 YOUR TASK:
-Extract concept titles worth studying through active recall. The student will attempt to explain each one from memory — so each title must be something a student can meaningfully explain, not just name.
+Extract concept titles that are genuinely worth studying through active recall. The student will attempt to explain each one from memory.
 
-CRITERIA — a good concept title must be ALL of:
+A good concept title must be ALL of:
 1. EXPLAINABLE — "explain this" produces a coherent, evaluable answer
 2. SPECIFIC — explainable in 2–5 minutes; not a whole topic, not a single word
 3. ASSESSABLE — clear right/wrong or better/worse
 4. STANDALONE — makes sense without five other concepts being explained first
 5. HIGH-YIELD — appears on exams or matters in clinical/professional practice
 
-GOOD EXAMPLES across course types:
+GOOD EXAMPLES:
 
 Mechanistic (physiology, pathophysiology, pharmacology):
-  ✓ "Mechanism by which loop diuretics cause hypokalaemia"
-  ✓ "How insulin resistance leads to hyperglycaemia in type 2 diabetes"
-  ✓ "Why beta-blockers are contraindicated in asthma"
+  "Mechanism by which loop diuretics cause hypokalaemia"
+  "How insulin resistance leads to hyperglycaemia in type 2 diabetes"
+  "Why beta-blockers are contraindicated in asthma"
 
 Clinical/Management (med-surg, reproductive health, nutrition):
-  ✓ "Nursing management of a patient with acute pulmonary oedema"
-  ✓ "Partograph interpretation and criteria for escalation in labour"
-  ✓ "Nutritional requirements and supplementation in pregnancy"
+  "Nursing management of a patient with acute pulmonary oedema"
+  "Partograph interpretation and criteria for escalation in labour"
+  "Nutritional requirements and supplementation in pregnancy"
 
 Interpretive/Diagnostic (ABGs, ECGs, partographs, labs):
-  ✓ "ABG interpretation: identifying metabolic acidosis with respiratory compensation"
-  ✓ "ECG recognition of atrial fibrillation and immediate nursing priorities"
+  "ABG interpretation: identifying metabolic acidosis with respiratory compensation"
+  "ECG recognition of atrial fibrillation and immediate nursing priorities"
 
 Process/Framework (community health, public health):
-  ✓ "Epidemiological triad and how breaking any link interrupts disease transmission"
-  ✓ "Levels of prevention and their application in communicable disease control"
+  "Epidemiological triad and how breaking any link interrupts disease transmission"
+  "Levels of prevention and their application in communicable disease control"
 
 Conceptual/Applied (psychiatry, mental health, ethics, management):
-  ✓ "Principles of therapeutic communication in psychiatric nursing"
-  ✓ "How stigma affects help-seeking behaviour in mental health"
-  ✓ "Delegation in nursing: principles, criteria, and accountability"
+  "Principles of therapeutic communication in psychiatric nursing"
+  "How stigma affects help-seeking behaviour in mental health"
+  "Delegation in nursing: principles, criteria, and accountability"
 
 EXCLUDE:
-✗ Broad topics ("The cardiovascular system") — too wide
-✗ Pure vocabulary ("Definition of homeostasis") — no depth
-✗ Lists ("Types of diuretics") — a list is not an explainable concept
-✗ Historical/contextual background ("History of nursing") — not assessable
-✗ Section headings ("Overview", "Introduction", "Summary")
-✗ Concepts where "explaining" only means reciting a fact
+- Broad topics ("The cardiovascular system") — too wide
+- Pure vocabulary ("Definition of homeostasis") — no depth
+- Lists ("Types of diuretics") — a list is not an explainable concept
+- Historical/contextual background — not assessable
+- Section headings ("Overview", "Introduction", "Summary")
 
-DEDUPLICATION:
-If two titles refer to the same concept from different angles, merge them into one specific title.
-Example: "Mechanism of oedema in nephrotic syndrome" + "How nephrotic syndrome causes oedema" → one concept.
+DEDUPLICATION: If two titles refer to the same concept, merge into one.
 
-FORMAT:
-- Noun phrase or "How/Why/Steps" construction — not a question
-- Include the specific aspect being addressed
-- 5–14 words
+FORMAT: Each title should be 5–14 words.
 
-QUANTITY: 6–12 concepts. If only 4 are genuinely assessable, return 4. Do not pad.
+QUANTITY: Extract 6–12 concepts. Quality over quantity. Do not pad.
 
 ---
 
-CRITICAL FORMAT REQUIREMENT:
-Each concept title must be a SEPARATE string in the array.
-Do NOT concatenate multiple titles into one string.
-Do NOT join titles without separators.
+OUTPUT FORMAT — READ THIS CAREFULLY:
 
-CORRECT:
-{{"concepts": ["Mechanism of antipsychotic medications in reducing positive symptoms", "Principles of therapeutic communication in psychiatric nursing", "Biopsychosocial model of mental illness and its implications for treatment"]}}
+You must return a JSON object with a "concepts" key containing an ARRAY of strings.
+Each concept title MUST be a separate string element in the array.
+NEVER join multiple titles into one string.
+NEVER concatenate titles without putting them in separate array elements.
 
-INCORRECT:
-{{"concepts": ["Mechanism of antipsychotic medications in reducing positive symptomsPrinciples of therapeutic communication in psychiatric nursingBiopsychosocial model..."]}}
+CORRECT FORMAT:
+{{
+  "concepts": [
+    "Mechanism by which loop diuretics cause hypokalaemia",
+    "Principles of therapeutic communication in psychiatric nursing",
+    "Biopsychosocial model of mental illness and its nursing implications",
+    "How stigma affects help-seeking behaviour in mental health"
+  ]
+}}
 
-Respond ONLY with valid JSON. No preamble. No markdown. No text outside the JSON.
-{{"concepts": ["Concept title 1", "Concept title 2", "Concept title 3"]}}"""
+WRONG FORMAT (do NOT do this):
+{{
+  "concepts": [
+    "Mechanism by which loop diuretics cause hypokalaemiaPrinciples of therapeutic communicationBiopsychosocial model"
+  ]
+}}
 
-    raw = _call(prompt, max_tokens=600, temperature=0.2)
+Return ONLY the JSON object. No preamble. No explanation. No markdown code fences. No text before or after the JSON."""
+
+    raw = _call(prompt, max_tokens=700, temperature=0.2)
     data = _parse_json(raw)
     if not data:
         return None
@@ -490,47 +496,30 @@ Respond ONLY with valid JSON. No preamble. No markdown. No text outside the JSON
     if not isinstance(concepts, list):
         return None
 
-    # ── Concatenation fix ────────────────────────────────────────────────
-    # The AI occasionally returns all concepts joined into one long string
-    # instead of separate array items. Detect and split these cases.
-    # Heuristic: if any single item is longer than 120 chars, it's likely
-    # multiple concepts concatenated without separators.
-    expanded = []
+    # Safety net: if any item is suspiciously long, try splitting on camelCase boundary
+    # This catches the rare case where the AI concatenates despite instructions
+    clean_concepts = []
     for c in concepts:
         if not isinstance(c, str):
             continue
-        c = c.strip()
-        if len(c) > 120:
-            # Try to split on capital letters that start new concept titles
-            # Pattern: split before an uppercase word that follows a lowercase word
-            # e.g. "...therapyMechanism..." → "...therapy" + "Mechanism..."
-            parts = re.split(r'(?<=[a-z])(?=[A-Z])', c)
-            # Also try splitting on common phrase starters
-            if len(parts) <= 1:
-                parts = re.split(
-                    r'(?:(?<=\w)\s+(?=(?:Mechanism|Principles|How|Why|Role|'
-                    r'Steps|Nursing|Management|Pathophysiology|Causes|Effects|'
-                    r'Types|Classification|Criteria|Assessment|Treatment|'
-                    r'Diagnosis|Complications|Prevention|Rehabilitation|'
-                    r'Pharmacology|Clinical|Biopsychosocial|De-escalation|'
-                    r'Electroconvulsive|Neuroleptic|Schizophrenia|CBT|DSM)))',
-                    c
-                )
-            expanded.extend([p.strip() for p in parts if p.strip()])
+        c = c.strip().strip('"').strip("'")
+        if not c or len(c) < 5:
+            continue
+        # If a single item is longer than 150 chars, it's almost certainly concatenated
+        if len(c) > 150:
+            import re as _re
+            parts = _re.split(r'(?<=[a-z]{3})(?=[A-Z][a-z])', c)
+            clean_concepts.extend([p.strip() for p in parts if len(p.strip()) >= 5])
         else:
-            expanded.append(c)
+            clean_concepts.append(c)
 
-    # ── Standard clean + deduplicate ─────────────────────────────────────
+    # Deduplicate preserving order
     seen = set()
     result = []
-    for c in expanded:
-        cleaned = c.strip().strip('"').strip("'")
-        if len(cleaned) < 5:
-            continue
-        lower = cleaned.lower()
-        if lower in seen:
-            continue
-        seen.add(lower)
-        result.append(cleaned)
+    for c in clean_concepts:
+        lower = c.lower()
+        if lower not in seen:
+            seen.add(lower)
+            result.append(c)
 
     return result[:12], was_truncated
