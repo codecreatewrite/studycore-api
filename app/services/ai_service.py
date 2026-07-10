@@ -465,6 +465,19 @@ FORMAT:
 
 QUANTITY: 6–12 concepts. If only 4 are genuinely assessable, return 4. Do not pad.
 
+---
+
+CRITICAL FORMAT REQUIREMENT:
+Each concept title must be a SEPARATE string in the array.
+Do NOT concatenate multiple titles into one string.
+Do NOT join titles without separators.
+
+CORRECT:
+{{"concepts": ["Mechanism of antipsychotic medications in reducing positive symptoms", "Principles of therapeutic communication in psychiatric nursing", "Biopsychosocial model of mental illness and its implications for treatment"]}}
+
+INCORRECT:
+{{"concepts": ["Mechanism of antipsychotic medications in reducing positive symptomsPrinciples of therapeutic communication in psychiatric nursingBiopsychosocial model..."]}}
+
 Respond ONLY with valid JSON. No preamble. No markdown. No text outside the JSON.
 {{"concepts": ["Concept title 1", "Concept title 2", "Concept title 3"]}}"""
 
@@ -477,11 +490,40 @@ Respond ONLY with valid JSON. No preamble. No markdown. No text outside the JSON
     if not isinstance(concepts, list):
         return None
 
-    seen = set()
-    result = []
+    # ── Concatenation fix ────────────────────────────────────────────────
+    # The AI occasionally returns all concepts joined into one long string
+    # instead of separate array items. Detect and split these cases.
+    # Heuristic: if any single item is longer than 120 chars, it's likely
+    # multiple concepts concatenated without separators.
+    expanded = []
     for c in concepts:
         if not isinstance(c, str):
             continue
+        c = c.strip()
+        if len(c) > 120:
+            # Try to split on capital letters that start new concept titles
+            # Pattern: split before an uppercase word that follows a lowercase word
+            # e.g. "...therapyMechanism..." → "...therapy" + "Mechanism..."
+            parts = re.split(r'(?<=[a-z])(?=[A-Z])', c)
+            # Also try splitting on common phrase starters
+            if len(parts) <= 1:
+                parts = re.split(
+                    r'(?:(?<=\w)\s+(?=(?:Mechanism|Principles|How|Why|Role|'
+                    r'Steps|Nursing|Management|Pathophysiology|Causes|Effects|'
+                    r'Types|Classification|Criteria|Assessment|Treatment|'
+                    r'Diagnosis|Complications|Prevention|Rehabilitation|'
+                    r'Pharmacology|Clinical|Biopsychosocial|De-escalation|'
+                    r'Electroconvulsive|Neuroleptic|Schizophrenia|CBT|DSM)))',
+                    c
+                )
+            expanded.extend([p.strip() for p in parts if p.strip()])
+        else:
+            expanded.append(c)
+
+    # ── Standard clean + deduplicate ─────────────────────────────────────
+    seen = set()
+    result = []
+    for c in expanded:
         cleaned = c.strip().strip('"').strip("'")
         if len(cleaned) < 5:
             continue
