@@ -487,7 +487,8 @@ WRONG FORMAT (do NOT do this):
 
 Return ONLY the JSON object. No preamble. No explanation. No markdown code fences. No text before or after the JSON."""
 
-    raw = _call(prompt, max_tokens=700, temperature=0.2)
+    raw = _call(prompt, max_tokens=1200, temperature=0.2)
+    print(f"🔍 Raw extraction response: {raw[:500]}...")
     data = _parse_json(raw)
     if not data:
         return None
