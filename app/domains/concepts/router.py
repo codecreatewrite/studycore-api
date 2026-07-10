@@ -74,13 +74,8 @@ async def extract_from_text(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Extract candidate concept titles from pasted text or uploaded PDF.
-    Returns titles only — student selects and adds key points themselves.
-    """
     from app.services.ai_service import extract_concepts_from_text
 
-    # Verify course ownership
     from app.models.course import Course
     course = db.query(Course).filter(
         Course.id == course_id,
@@ -89,28 +84,22 @@ async def extract_from_text(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    # Get text content
     content = ""
-
     if file and file.filename:
-        # PDF upload
         if not file.filename.endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
-
         raw_bytes = await file.read()
-        if len(raw_bytes) > 10 * 1024 * 1024:  # 10MB limit
+        if len(raw_bytes) > 10 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="File too large. Maximum 10MB.")
-
         try:
             from pypdf import PdfReader
             reader = PdfReader(io.BytesIO(raw_bytes))
             pages = []
-            for page in reader.pages[:20]:  # Max 20 pages
+            for page in reader.pages[:20]:
                 pages.append(page.extract_text() or "")
             content = "\n".join(pages)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Could not read PDF: {str(e)}")
-
     elif text.strip():
         content = text.strip()
     else:
@@ -119,17 +108,18 @@ async def extract_from_text(
     if len(content.strip()) < 50:
         raise HTTPException(status_code=400, detail="Not enough text to extract concepts from")
 
-    # Run AI extraction
-    concepts = extract_concepts_from_text(content, course.title)
-
-    if not concepts:
+    # FIX: unpack the tuple
+    result = extract_concepts_from_text(content, course.title)
+    if not result:
         raise HTTPException(
             status_code=503,
             detail="AI extraction failed. Paste your text and try again."
         )
+    concepts, was_truncated = result
 
     return {
         "course_id": course_id,
         "extracted": concepts,
         "count": len(concepts),
+        "was_truncated": was_truncated,
     }
